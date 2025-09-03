@@ -13,6 +13,27 @@ from torch import nn
 from torch.nn import functional as F
 from torchvision import transforms, models
 
+from torch.serialization import add_safe_globals, safe_globals
+
+# allowlist Lightning wrappers if present (only if you trust your checkpoint source)
+try:
+    from lightning.fabric.wrappers import _FabricModule
+    add_safe_globals([_FabricModule])
+except Exception:
+    pass
+
+def _torch_load(path, map_location, weights_only=None):
+    # Handle PyTorch <2.6 (no weights_only) and >=2.6 (default True)
+    try:
+        if weights_only is None:
+            return torch.load(path, map_location=map_location)
+        else:
+            return torch.load(path, map_location=map_location, weights_only=weights_only)
+    except TypeError:
+        # for older torch versions without weights_only
+        return torch.load(path, map_location=map_location)
+
+
 
 # ------------------ Fixed Settings ------------------
 CLASSES = ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]

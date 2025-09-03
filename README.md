@@ -41,3 +41,8 @@ streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 หรือรันเป็น systemd แล้ววางหลัง reverse proxy ได้ตามสะดวก
 
 **หมายเหตุสำคัญ:** แอปนี้เพื่อการศึกษา/วิจัยเท่านั้น ไม่ใช่อุปกรณ์ทางการแพทย์
+
+
+### PyTorch 2.6+ หมายเหตุ
+- PyTorch 2.6 เปลี่ยนค่าเริ่มต้น `weights_only=True` ใน `torch.load`.
+- โค้ดนี้พยายามโหลดแบบ **safe** ก่อน (weights-only dict). ถ้าไม่สำเร็จจะลอง **unsafe** (`weights_only=False`) ซึ่ง *ต้องเชื่อใจไฟล์โมเดลจริง ๆ*.
