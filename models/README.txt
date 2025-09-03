@@ -1,1 +1,1 @@
-Place your EfficientNet .pt here (e.g., efficientnet.pt)
+Place your model file named exactly: efficientnet_b0_fold0.pt
