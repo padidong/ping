@@ -1,7 +1,7 @@
 
 import os
 import time
-from typing import List
+from typing import List, Dict
 
 import numpy as np
 from PIL import Image
@@ -13,34 +13,37 @@ from torch import nn
 from torch.nn import functional as F
 from torchvision import transforms, models
 
-from torch.serialization import add_safe_globals, safe_globals
+# Optional: timm (for models saved with timm EfficientNet)
+try:
+    import timm
+    TIMM_AVAILABLE = True
+except Exception:
+    TIMM_AVAILABLE = False
 
-# allowlist Lightning wrappers if present (only if you trust your checkpoint source)
+# For PyTorch 2.6+ safe/unsafe loading
+from torch.serialization import add_safe_globals
+
+# Allowlist Lightning wrapper if file came from Lightning (safe path still enforced)
 try:
     from lightning.fabric.wrappers import _FabricModule
     add_safe_globals([_FabricModule])
 except Exception:
     pass
 
-def _torch_load(path, map_location, weights_only=None):
-    # Handle PyTorch <2.6 (no weights_only) and >=2.6 (default True)
-    try:
-        if weights_only is None:
-            return torch.load(path, map_location=map_location)
-        else:
-            return torch.load(path, map_location=map_location, weights_only=weights_only)
-    except TypeError:
-        # for older torch versions without weights_only
-        return torch.load(path, map_location=map_location)
-
+# Allowlist timm EfficientNet class (for safe unpickler path)
+try:
+    from timm.models.efficientnet import EfficientNet as TIMM_EfficientNet
+    add_safe_globals([TIMM_EfficientNet])
+except Exception:
+    pass
 
 
 # ------------------ Fixed Settings ------------------
 CLASSES = ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
 MEAN = [0.4850, 0.4560, 0.4060]
 STD  = [0.2290, 0.2240, 0.2250]
-IMAGE_SIZE = 224  # EfficientNet-B0 recommended
-MODEL_PATH = "models/efficientnet_b0_fold0.pt"  # <- fixed single model path
+IMAGE_SIZE = 224  # EfficientNet-B0
+MODEL_PATH = "models/efficientnet_b0_fold0.pt"  # single fixed path
 
 
 st.set_page_config(
@@ -70,6 +73,7 @@ st.markdown(
         border-radius: 12px; background: rgba(250,204,21,.08);
       }
       .ok { color: #22c55e; }
+      .bad { color: #ef4444; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -81,6 +85,7 @@ st.markdown(
       <h2 style="margin: 6px 0;">🩺 Skin Lesion Classifier — EfficientNet-B0</h2>
       <span class="chip">7 classes: akiec, bcc, bkl, df, mel, nv, vasc</span>
       <span class="chip">Fixed model: efficientnet_b0_fold0.pt</span>
+      <span class="chip">timm support</span>
     </div>
     """,
     unsafe_allow_html=True,
@@ -90,19 +95,82 @@ st.markdown(
 def device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def build_efficientnet_b0(num_classes: int) -> nn.Module:
+def build_torchvision_efficientnet_b0(num_classes: int) -> nn.Module:
     m = models.efficientnet_b0(weights=None)
     in_f = m.classifier[-1].in_features
     m.classifier[-1] = nn.Linear(in_f, num_classes)
     return m
 
+def build_timm_efficientnet_b0(num_classes: int) -> nn.Module:
+    if not TIMM_AVAILABLE:
+        raise RuntimeError("timm not installed")
+    # Create timm model with correct num_classes
+    m = timm.create_model("efficientnet_b0", pretrained=False, num_classes=num_classes)
+    return m
+
+def sd_looks_like_timm(sd_keys):
+    # Heuristics: timm EfficientNet typically has 'conv_stem', 'bn1', 'blocks.0.0.conv_dw' etc.
+    for k in sd_keys:
+        if k.startswith("conv_stem.") or k.startswith("blocks.") or k.startswith("bn1."):
+            return True
+    return False
+
+def sd_looks_like_torchvision(sd_keys):
+    # Torchvision EfficientNet typically has 'features.0.0.', 'features.1.' etc.
+    for k in sd_keys:
+        if k.startswith("features."):
+            return True
+    return False
+
+def try_load_state_dict_into_models(sd: Dict[str, torch.Tensor], num_classes: int, dev):
+    # Clean prefixes
+    if any(k.startswith("module.") for k in sd.keys()):
+        sd = {k.replace("module.", ""): v for k, v in sd.items()}
+    if any(k.startswith("model.") for k in sd.keys()):
+        sd = {k.replace("model.", ""): v for k, v in sd.items()}
+
+    keys = list(sd.keys())
+
+    # Prefer timm if keys look like timm
+    errs = []
+    if TIMM_AVAILABLE and sd_looks_like_timm(keys):
+        try:
+            m = build_timm_efficientnet_b0(num_classes)
+            m.load_state_dict(sd, strict=False)
+            m.eval()
+            return m.to(dev)
+        except Exception as e:
+            errs.append(f"timm load failed: {e}")
+
+    # Try torchvision
+    if sd_looks_like_torchvision(keys) or True:
+        try:
+            m = build_torchvision_efficientnet_b0(num_classes)
+            m.load_state_dict(sd, strict=False)
+            m.eval()
+            return m.to(dev)
+        except Exception as e:
+            errs.append(f"torchvision load failed: {e}")
+
+    raise RuntimeError("State dict load failed.\n" + "\n".join(errs))
+
+def _torch_load(path, map_location, weights_only=None):
+    try:
+        if weights_only is None:
+            return torch.load(path, map_location=map_location)
+        else:
+            return torch.load(path, map_location=map_location, weights_only=weights_only)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
 @st.cache_resource(show_spinner=False)
 def load_fixed_model(path: str, num_classes: int, dev):
     """
-    Robust loader that tries:
-    1) TorchScript (jit)
-    2) Full model object
-    3) State dict onto EfficientNet-B0 head
+    Loader order (robust for PyTorch 2.6+ & timm):
+    1) TorchScript
+    2) SAFE: weights_only=True → build (timm or torchvision) and load state_dict
+    3) UNSAFE: weights_only=False (only if file trusted) — requires dependencies (e.g., timm, lightning) installed
+    4) Fallback: attempt to interpret any loaded object as state_dict-like
     """
     # 1) TorchScript
     try:
@@ -112,28 +180,55 @@ def load_fixed_model(path: str, num_classes: int, dev):
     except Exception:
         pass
 
-    # 2) Full model
+    # 2) SAFE weights_only
     try:
-        obj = torch.load(path, map_location=dev)
-        m = obj.get("model", obj) if isinstance(obj, dict) else obj
-        try: m.eval()
-        except Exception: pass
-        return m.to(dev)
-    except Exception:
-        pass
+        obj = _torch_load(path, map_location="cpu", weights_only=True)
+        if isinstance(obj, dict):
+            sd = obj.get("state_dict", obj)
+            if isinstance(sd, dict):
+                return try_load_state_dict_into_models(sd, num_classes, dev)
+    except Exception as e:
+        safe_err = str(e)
 
-    # 3) State dict
-    sd = torch.load(path, map_location="cpu")
-    if isinstance(sd, dict) and "state_dict" in sd:
-        sd = sd["state_dict"]
-    m = build_efficientnet_b0(num_classes=num_classes)
+    # 3) UNSAFE (requires trust + installed classes)
     try:
-        m.load_state_dict(sd, strict=False)
-    except Exception:
-        sd2 = {k.replace("module.", ""): v for k, v in sd.items()}
-        m.load_state_dict(sd2, strict=False)
-    m.eval()
-    return m.to(dev)
+        obj = _torch_load(path, map_location=dev, weights_only=False)
+        if isinstance(obj, dict) and "state_dict" in obj and isinstance(obj["state_dict"], dict):
+            return try_load_state_dict_into_models(obj["state_dict"], num_classes, dev)
+        # If full model object (e.g., timm EfficientNet), try .eval() directly
+        if hasattr(obj, "eval"):
+            try:
+                obj.eval()
+                return obj.to(dev)
+            except Exception:
+                pass
+        # Or object contains nested model
+        if isinstance(obj, dict) and "model" in obj:
+            m = obj["model"]
+            try:
+                m.eval()
+                return m.to(dev)
+            except Exception:
+                pass
+    except Exception as e:
+        unsafe_err = str(e)
+        # continue to fallback
+
+    # 4) Fallback: try to interpret any object as state_dict
+    try:
+        any_obj = _torch_load(path, map_location="cpu", weights_only=None)
+        if isinstance(any_obj, dict):
+            cand = any_obj.get("state_dict", any_obj)
+            if isinstance(cand, dict):
+                return try_load_state_dict_into_models(cand, num_classes, dev)
+    except Exception as e:
+        fallback_err = str(e)
+
+    msg = "Failed to load model.\n"
+    if 'safe_err' in locals(): msg += f"- SAFE load error: {safe_err}\n"
+    if 'unsafe_err' in locals(): msg += f"- UNSAFE load error: {unsafe_err}\n"
+    if 'fallback_err' in locals(): msg += f"- Fallback error: {fallback_err}\n"
+    raise RuntimeError(msg)
 
 def preprocess(pil: Image.Image, image_size: int, mean: List[float], std: List[float], dev):
     tfm = transforms.Compose([
@@ -161,7 +256,9 @@ try:
         MODEL = load_fixed_model(MODEL_PATH, num_classes=len(CLASSES), dev=dev)
     st.success("Model loaded ✅")
 except Exception as e:
-    st.error(f"โหลดโมเดลไม่สำเร็จ: {e}")
+    st.error(f"โหลดโมเดลไม่สำเร็จ:\n{e}")
+    if not TIMM_AVAILABLE:
+        st.info("คำแนะนำ: โมเดลนี้อาจสร้างจาก `timm` ให้ลองติดตั้งเพิ่ม:\n\n`pip install timm`")
     st.stop()
 
 # ------------------ Disclaimer ------------------
@@ -204,7 +301,7 @@ if files:
             st.markdown(f"**ผลการทำนาย:** `{pred_class}`  (ความเชื่อมั่น {pred_prob:.2%})")
             st.caption(f"Inference: ~{elapsed:.1f} ms")
 
-            with st.expander("ดูความน่าจะเป็นของทุกคลาส (Top-7)"):
+            with st.expander("ดูความน่าจะเป็นของทุกคลาส"):
                 for c, p in sorted(zip(CLASSES, probs), key=lambda x: x[1], reverse=True):
                     st.write(f"- **{c}**: {p:.2%}")
 else:

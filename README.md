@@ -1,25 +1,16 @@
 
-# Skin Lesion — EfficientNet-B0 (Single Model)
+# Skin Lesion — EfficientNet-B0 (Single Model, timm-safe)
 
-ใช้โมเดลเดียวตายตัว: `models/efficientnet_b0_fold0.pt`  
-คลาส 7 ประเภท: `akiec, bcc, bkl, df, mel, nv, vasc`  
-Normalize: `mean=[0.4850,0.4560,0.4060], std=[0.2290,0.2240,0.2250]`
+**Single fixed model:** `models/efficientnet_b0_fold0.pt`  
+**Classes (7):** `akiec, bcc, bkl, df, mel, nv, vasc`  
+**Normalize:** `mean=[0.4850,0.4560,0.4060]`, `std=[0.2290,0.2240,0.2250]`, `image_size=224`  
 
-## โครงสร้าง
-```
-skin-lesion-efficientnet-b0-single/
-├─ app.py
-├─ requirements.txt
-├─ .streamlit/
-│  └─ config.toml
-├─ assets/
-│  └─ styles.css
-└─ models/
-   ├─ efficientnet_b0_fold0.pt   # ← ใส่ไฟล์โมเดลของคุณชื่อนี้
-   └─ README.txt
-```
+## What's new
+- รองรับ **timm**: โหลด state_dict เข้า timm หรือ torchvision โดยอัตโนมัติ
+- อนุญาต safe globals สำหรับ `timm.models.efficientnet.EfficientNet` และ Lightning `_FabricModule`
+- ลอจิกโหลดแบบทนทาน: TorchScript → **weights_only=True** (safe) → **weights_only=False** (trusted) → fallback
 
-## วิธีรัน
+## Quick Start
 ```bash
 python -m venv .venv
 # Windows: .venv\Scripts\activate
@@ -27,22 +18,17 @@ python -m venv .venv
 
 pip install -r requirements.txt
 
-# วางโมเดลไว้ที่ models/efficientnet_b0_fold0.pt
+# ใส่โมเดลของคุณชื่อ: models/efficientnet_b0_fold0.pt
 streamlit run app.py
 ```
-เปิด `http://localhost:8501` แล้วอัปโหลดรูป ระบบจะแสดงผลว่าเป็นคลาสใด พร้อมความเชื่อมั่น (%)
+เปิด `http://localhost:8501` แล้วอัปโหลดรูป
 
-> ตัวโหลดโมเดลพยายามอ่านแบบ: TorchScript → Full model → State dict (จะ map เข้ากับ EfficientNet-B0 ให้อัตโนมัติ)
+> ถ้าโมเดลคุณถูกบันทึกแบบ **full object** จาก timm/Lightning ให้แน่ใจว่าติดตั้ง `timm` และ/หรือ `lightning` ด้วย
 
-## Deploy
-```bash
-streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+## Tools: Convert to state_dict only
 ```
-หรือรันเป็น systemd แล้ววางหลัง reverse proxy ได้ตามสะดวก
+python tools/convert_to_state_dict.py --src models/efficientnet_b0_fold0.pt --dst models/efficientnet_b0_fold0_state.pt
+```
+แล้วเปลี่ยน `MODEL_PATH` หรือรีเนมไฟล์แทน
 
-**หมายเหตุสำคัญ:** แอปนี้เพื่อการศึกษา/วิจัยเท่านั้น ไม่ใช่อุปกรณ์ทางการแพทย์
-
-
-### PyTorch 2.6+ หมายเหตุ
-- PyTorch 2.6 เปลี่ยนค่าเริ่มต้น `weights_only=True` ใน `torch.load`.
-- โค้ดนี้พยายามโหลดแบบ **safe** ก่อน (weights-only dict). ถ้าไม่สำเร็จจะลอง **unsafe** (`weights_only=False`) ซึ่ง *ต้องเชื่อใจไฟล์โมเดลจริง ๆ*.
+**คำเตือน:** โหมด `weights_only=False` มีความเสี่ยงการรันโค้ดจากไฟล์ ทำเฉพาะเมื่อเชื่อใจแหล่งไฟล์จริง ๆ

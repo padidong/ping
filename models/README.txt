@@ -1,1 +1,1 @@
-Place your model file named exactly: efficientnet_b0_fold0.pt
+Place your file named exactly: efficientnet_b0_fold0.pt
