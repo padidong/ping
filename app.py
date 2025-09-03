@@ -74,6 +74,14 @@ st.markdown(
       }
       .ok { color: #22c55e; }
       .bad { color: #ef4444; }
+      .disclaimer {
+        padding: 12px 16px;
+        border: 1px dashed rgba(234,179,8,.7);
+        border-radius: 12px;
+        background: rgba(250,204,21,.08);
+        margin-bottom: 10px;
+      }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -94,6 +102,46 @@ st.markdown(
 # ------------------ Utils ------------------
 def device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def get_model_in_chans(model: nn.Module) -> int:
+    # Try timm's conv_stem
+    try:
+        if hasattr(model, "conv_stem") and hasattr(model.conv_stem, "weight"):
+            return int(model.conv_stem.weight.shape[1])
+    except Exception:
+        pass
+    # Torchvision efficientnet: first conv is in features[0][0]
+    try:
+        first = getattr(model, "features", [])[0][0]
+        if hasattr(first, "weight"):
+            return int(first.weight.shape[1])
+    except Exception:
+        pass
+    # Fallback: scan first conv2d
+    for m in model.modules():
+        if isinstance(m, nn.Conv2d):
+            return int(m.weight.shape[1])
+    return 3  # default
+
+def build_transform_adaptive(image_size: int, mean_rgb, std_rgb, in_chans: int):
+    # If model expects 1 channel, convert to grayscale and use averaged mean/std
+    if in_chans == 1:
+        mean_scalar = float(sum(mean_rgb) / 3.0)
+        std_scalar  = float(sum(std_rgb)  / 3.0)
+        return transforms.Compose([
+            transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.CenterCrop(image_size),
+            transforms.Grayscale(num_output_channels=1),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[mean_scalar], std=[std_scalar]),
+        ])
+    # If model expects 3 channels (common case)
+    return transforms.Compose([
+        transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.CenterCrop(image_size),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=mean_rgb, std=std_rgb),
+    ])
 
 def build_torchvision_efficientnet_b0(num_classes: int) -> nn.Module:
     m = models.efficientnet_b0(weights=None)
@@ -230,13 +278,8 @@ def load_fixed_model(path: str, num_classes: int, dev):
     if 'fallback_err' in locals(): msg += f"- Fallback error: {fallback_err}\n"
     raise RuntimeError(msg)
 
-def preprocess(pil: Image.Image, image_size: int, mean: List[float], std: List[float], dev):
-    tfm = transforms.Compose([
-        transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BILINEAR),
-        transforms.CenterCrop(image_size),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=mean, std=std),
-    ])
+def preprocess(pil: Image.Image, image_size: int, mean: List[float], std: List[float], dev, in_chans: int):
+    tfm = build_transform_adaptive(image_size, mean, std, in_chans)
     x = tfm(pil).unsqueeze(0).to(dev)
     return x
 
@@ -261,16 +304,17 @@ except Exception as e:
         st.info("คำแนะนำ: โมเดลนี้อาจสร้างจาก `timm` ให้ลองติดตั้งเพิ่ม:\n\n`pip install timm`")
     st.stop()
 
+
 # ------------------ Disclaimer ------------------
-st.markdown(
-    """
-    <div class="warn"><strong>⚠️ Medical Disclaimer:</strong> For education/research only.
-    Not a medical device. Do not use for diagnosis.</div>
-    """,
-    unsafe_allow_html=True,
-)
+DISCLAIMER_TEXT = "Medical Disclaimer: For education/research only. Not a medical device. Do not use for diagnosis."
+st.markdown(f"<div class='disclaimer'><b>{DISCLAIMER_TEXT}</b></div>", unsafe_allow_html=True)
+agree = st.checkbox("I have read and understood the medical disclaimer.", value=False)
+if not agree:
+    st.info("Please acknowledge the disclaimer above to proceed.")
+    st.stop()
 
 # ------------------ Uploader ------------------
+
 st.markdown("### 📤 อัปโหลดภาพผิวหนัง (JPG/PNG/BMP/TIFF)")
 files = st.file_uploader(
     "เลือกไฟล์ภาพ (อัปโหลดหลายไฟล์ได้)",
@@ -290,7 +334,8 @@ if files:
 
         with c2:
             start = time.time()
-            x = preprocess(pil, IMAGE_SIZE, MEAN, STD, dev)
+            x = preprocess(pil, IMAGE_SIZE, MEAN, STD, dev, st.session_state.get('in_chans', 3))
+            try:
             probs = predict(MODEL, x)
             elapsed = (time.time() - start) * 1000.0
 
@@ -300,6 +345,10 @@ if files:
 
             st.markdown(f"**ผลการทำนาย:** `{pred_class}`  (ความเชื่อมั่น {pred_prob:.2%})")
             st.caption(f"Inference: ~{elapsed:.1f} ms")
+        except Exception as e:
+            st.error("ไม่สามารถรันพยากรณ์ได้ (ดู Logs รายละเอียด)")
+            st.info("Hint: ถ้าโมเดลเทรนแบบช่องสัญญาณภาพเป็น 1 (Grayscale) ให้ใช้ไฟล์ state_dict ที่ in_chans=1 หรือให้แอปตรวจพบแล้วแปลงเป็น grayscale อัตโนมัติ — เวอร์ชันนี้ทำแล้ว ถ้ายังพังให้ตรวจสอบไฟล์โมเดลว่าเป็น EfficientNet-B0 จริงหรือไม่.")
+            raise
 
             with st.expander("ดูความน่าจะเป็นของทุกคลาส"):
                 for c, p in sorted(zip(CLASSES, probs), key=lambda x: x[1], reverse=True):
