@@ -336,23 +336,24 @@ if files:
             start = time.time()
             x = preprocess(pil, IMAGE_SIZE, MEAN, STD, dev, st.session_state.get('in_chans', 3))
             try:
-            probs = predict(MODEL, x)
-            elapsed = (time.time() - start) * 1000.0
+                probs = predict(MODEL, x)
+                elapsed = (time.time() - start) * 1000.0
 
-            idx = int(np.argmax(probs))
-            pred_class = CLASSES[idx]
-            pred_prob = float(probs[idx])
+                idx = int(np.argmax(probs))
+                pred_class = CLASSES[idx]
+                pred_prob = float(probs[idx])
 
-            st.markdown(f"**ผลการทำนาย:** `{pred_class}`  (ความเชื่อมั่น {pred_prob:.2%})")
-            st.caption(f"Inference: ~{elapsed:.1f} ms")
-        except Exception as e:
-            st.error("ไม่สามารถรันพยากรณ์ได้ (ดู Logs รายละเอียด)")
-            st.info("Hint: ถ้าโมเดลเทรนแบบช่องสัญญาณภาพเป็น 1 (Grayscale) ให้ใช้ไฟล์ state_dict ที่ in_chans=1 หรือให้แอปตรวจพบแล้วแปลงเป็น grayscale อัตโนมัติ — เวอร์ชันนี้ทำแล้ว ถ้ายังพังให้ตรวจสอบไฟล์โมเดลว่าเป็น EfficientNet-B0 จริงหรือไม่.")
-            raise
+                st.markdown(f"**ผลการทำนาย:** `{pred_class}`  (ความเชื่อมั่น {pred_prob:.2%})")
+                st.caption(f"Inference: ~{elapsed:.1f} ms")
 
-            with st.expander("ดูความน่าจะเป็นของทุกคลาส"):
-                for c, p in sorted(zip(CLASSES, probs), key=lambda x: x[1], reverse=True):
-                    st.write(f"- **{c}**: {p:.2%}")
+                with st.expander("ดูความน่าจะเป็นของทุกคลาส"):
+                    for c, p in sorted(zip(CLASSES, probs), key=lambda x: x[1], reverse=True):
+                        st.write(f"- **{c}**: {p:.2%}")
+            except Exception as e:
+                st.error("ไม่สามารถรันพยากรณ์ได้ (ดู Logs รายละเอียด)")
+                st.info("Hint: ถ้าโมเดลเทรนแบบช่องสัญญาณภาพเป็น 1 (Grayscale) แอปจะแปลงให้แล้ว; ถ้ายังพังตรวจสอบว่าไฟล์คือ EfficientNet-B0 7-คลาสจริงหรือไม่ หรือแปลงเป็น state_dict-only ก่อนใช้.")
+                raise
+
 else:
     st.info("อัปโหลดภาพเพื่อดูผลการทำนายจากโมเดล EfficientNet-B0")
 
